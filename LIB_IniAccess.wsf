@@ -1,0 +1,409 @@
+
+' Access to ini-files
+' F. Gitmans, FRT GmbH
+' Version 1.0
+Option Explicit
+
+
+const DebugMessages = false	' Display messageboxes as debug
+Const ForReading = 1
+Const ForWriting = 2
+Const TristateFalse = False	' open as ascii
+Const TemporaryFolder = 2	' path found in the TMP environment variable
+
+Const MaxIniFiles = 10
+redim sIniLines(MaxIniFiles-1,0)	' as string
+redim cUsedIniFiles (MaxIniFiles-1)
+
+Private TotalIniSize ' largest size of ALL ini-files; because it's a multi-dim array, the array size must always be max of all
+TotalIniSize = 0
+
+
+Sub IniAccess_Initialize
+			dim i
+			for i = 0 to MaxIniFiles -1
+				cUsedIniFiles (i) = FALSE
+			next 
+end sub
+
+class IniAccess
+			Private FileIndex		
+      dim oFSO	' as object
+      dim cIniSize	' as integer (current dimension, is rounded to next 10 of cLine)
+      dim cLine	' as integer (actual line count)
+
+      dim oDict	' as object
+
+      dim DataAvailable ' do we have an open inifile ?!
+
+      dim sResult	' as string
+
+     dim nAns	' as integer
+
+		Private Sub Class_Initialize	' Setup Initialize event.
+			DataAvailable = false
+			FileIndex= -1
+		End Sub
+
+
+		Private Sub Class_Terminate	' Setup Terminate event.
+		End Sub
+
+		Public Property Let Index(value)
+			 FileIndex = value
+		end Property
+	
+		Public Property Get Index()
+			Index = FileIndex
+		end Property
+
+		Public Function GetFreeBuffer(ByRef No)
+		' get a free buffer index
+			GetFreeBuffer = true
+			dim i
+				for i = 0 to MaxIniFiles
+					if not (cUsedIniFiles (i)) then
+						No = i
+						exit function
+					end if
+				next
+			GetFreeBuffer = false
+		end function
+
+		Public Function CloseIniFile()
+		' closes the access; 
+		' the file must be saved manually by SaveIniFile !!!
+      	DataAvailable = false
+      	CloseIniFile = true
+		if (FileIndex >= 0) or (FileIndex < MaxIniFiles)then
+			cUsedIniFiles (FileIndex) = false
+		end if
+		end function
+
+
+		Public Function LoadIniFile(sPath, Buffer, Create)
+      	' try to load the file sPath into memory;
+      	' when changes are made, an explicit SaveIniFile must follow
+      	' returns true/false as success
+      	Dim oFile	' as file object
+      	Dim sLine, sKey	' as string
+      	Dim iKeyEnd	' as integer
+      	Dim bCreate	' as boolean
+      	LoadIniFile = FALSE
+				if (Buffer < 0) or (Buffer >= MaxIniFiles)then
+					MsgBox "Function <LoadIniFile>" & VBCrLf & "FileIndex must be within 0 and " & (MaxIniFiles-1)
+					exit function
+				end if
+				FileIndex = Buffer
+				cUsedIniFiles  (FileIndex) = TRUE
+		
+      	Set oFSO = CreateObject("Scripting.FileSystemObject")
+      	bCreate = False
+      	if not oFSO.FileExists(sPath) then
+					if not Create then
+						exit function
+					end if
+      		bCreate = true
+      	end if 
+
+      	Set oFile = oFSO.OpenTextFile(sPath, ForReading, bCreate, TristateFalse)
+      	Set oDict = CreateObject("Scripting.Dictionary")	' create the dictionary
+
+      	cLine = 0 : cIniSize = 0 ' initialize...
+
+      	' loop to read and process ini file lines...
+      	Do Until oFile.AtEndOfStream 
+					if (cLine >= TotalIniSize)then
+						TotalIniSize = TotalIniSize + 10
+      			cIniSize = cIniSize + 10 ' local var
+      			ReDim Preserve sIniLines(MaxIniFiles-1, TotalIniSize)
+      		End If
+
+      		' read a line, and save in array...
+      		sLine = oFile.ReadLine : sIniLines(FileIndex,cLine) = sLine
+      		' skip blanks & comments...
+      		If NOT (sLine = "") AND NOT (Left(sLine,1) = ";")	then
+      	
+         		If (Left(sLine,1) = "[") then	' check if this line is a key...
+            		iKeyEnd = InStr(sLine,"]")	' found a key, extract keyname...
+            		if (iKeyEnd = 0) then 'error: no closing bracket -> ignore
+									DebugMsgbOx "Reading Section without closing bracket ?!?"
+									iKeyEnd = len(sLine)
+								end if
+            		sKey = Mid(sLine, 2, iKeyEnd -2) ' :	MsgBox(sKey)
+            		sKey= trim(sKey) 'remove trailing/leading blanks
+            		' if a key then keep track of it's location...
+			if (oDict.Exists(sKey)) then
+				msgbox "double section found "+sKey
+			else
+            			oDict.Add sKey, cLine
+			end if
+         		End If	' key test
+      		End If	' blank/comma test
+      		cLine = cLine + 1
+      	Loop 
+      	oFile.Close	
+      	Set oFile = nothing	
+      	DataAvailable = TRUE
+      	LoadIniFile = TRUE
+  	End Function
+
+
+	Public Function SaveIniFile(sPath)
+		' save the file to disk
+   	' when changes are made, an explicit SaveIniFile must follow
+   	' returns true/false as success
+   	Dim oFile	' as file object
+   	Dim bCreate	' as boolean
+   	Dim iLine	' as integer
+
+   	SaveIniFile = false
+
+   	if not DataAvailable then ' no file opened previously
+   		exit Function
+   	end if 
+
+   	bCreate = True
+   	Set oFile = oFSO.OpenTextFile(sPath, ForWriting, bCreate, TristateFalse)
+
+   	iLine = 0	
+
+   	Do Until iLine >= cLine	' write out the lines, one at a time...
+   		oFile.WriteLine sIniLines(FileIndex,iLine)
+   		iLine = iLine + 1	' bump line index
+   	Loop
+
+   	oFile.Close	' clean up
+   	Set oFile = nothing
+   	SaveIniFile = true
+   End Function
+
+
+   Public Function GetSubKeyValue(sKey, sSubKey, ByRef FoundValue)
+   ' returns true or false; Values returned in FoundValue
+   Dim iKey, iSubKey	' as integer
+   Dim sLine	' as string
+   Dim sSplitArray	' as string array
+   DIM FoundKey
+
+   	GetSubKeyValue = false
+   	if not DataAvailable then ' no file opened
+   	  	exit Function
+   	end if
+
+   	if oDict.count = 0 then ' no entries in file
+     		exit Function
+   	end if
+
+   	iKey = oDict.Item(sKey) 'retrieve the index for the key...
+
+ 		if len(iKey) = 0 then ' no section found
+				DebugMsgBox "GetSubKeyValue" & VBCRLF & "Section [" & sKey & "] not found !"
+   			exit function    		
+		end if
+
+   	iSubKey = iKey + 1	' position of first line in given section
+   	Do Until iSubKey >= cLine
+      	sLine = sIniLines(FileIndex,iSubKey)	' get line
+      	If InStr(sLine,"=") > 0	then	' is this a subkey...
+
+         	sSplitArray = Split(sLine, "=", -1, vbTextCompare)	' parse this subkey...
+         	FoundKey = trim(sSplitArray(0))
+         	If UCase(FoundKey) = uCase(sSubKey)	then	' is this the subkey?
+         		FoundValue = sSplitArray(1)	' the RHS is the answer...
+         		GetSubKeyValue = true
+	DebugMsgBox  "OK" & VBCRLF & "" & VBCRLF & "key/subkey: " & sKey & "/" & sSubKey & "=" & FoundValue 
+         		Exit Function	' successfull return
+         	End If
+      	End If
+
+      	' make sure we haven't over-run the subkeys...
+      	if (Left(sLine,1) = "[") then 'subkey not found within section
+				  DebugMsgBox "Section found, entries found, key not found" & VBCRLF & "key/subkey: " & sKey & "/" & sSubKey
+	  			exit function    		
+				end if
+
+      	iSubKey = iSubKey + 1	' next line
+   	Loop	' search loop
+	  DebugMsgBox  "Section found, empty section, no key found " & VBCRLF & "key/subkey: " & sKey & "/" & sSubKey
+   End Function
+
+
+  Public Function SetSubKeyValue(sKey, sSubKey, ByVal Value)
+  ' returns true or false; Values returned in FoundValue
+    Dim iKey, iSubKey	' as integer
+    Dim sLine	' as string
+		Dim sNewLine
+    Dim sSplitArray	' as string array
+    Dim FoundKey
+
+    SetSubKeyValue = false
+   	if not DataAvailable then
+   		exit Function
+   	end if 
+
+    SetSubKeyValue= true
+    sNewLine = sSubKey & "=" & Value
+
+   	iKey = oDict.Item(sKey)	' retrieve the index for the key...
+		if len(iKey) = 0 then ' no section found
+			' make space for new entry
+			TotalIniSize = TotalIniSize + 2
+ 			cIniSize = cIniSize + 2 ' local var
+ 			ReDim Preserve sIniLines(MaxIniFiles-1, TotalIniSize)
+			' create section 
+      sLine = "[" & sKey & "]" 
+			sIniLines(FileIndex,cLine) = sLine
+   		oDict.Item (sKey)= cLine
+   		cLine = cLine + 1
+
+			' create key
+			sIniLines(FileIndex,cLine) = sNewLine 
+   		cLine = cLine + 1
+			exit function
+		end if 
+
+   	iSubKey = iKey + 1
+   	Do Until iSubKey = cLine
+      	sLine = sIniLines(FileIndex,iSubKey)	' get line
+
+      	If InStr(sLine,"=") > 0	then	' is this a subkey...
+         	sSplitArray = Split(sLine, "=", -1, vbTextCompare)	' parse this subkey...
+         	FoundKey = trim(sSplitArray(0))
+         	If UCase(FoundKey) = UCase(sSubKey)	then	' is this the subkey?
+						sIniLines(FileIndex,iSubKey) = sNewLine ' set new value
+         		Exit Function	' return
+         	End If	
+      	End If	
+
+      	' make sure we haven't over-run the subkeys...
+      	if (Left(sLine,1) = "[") or (iSubKey = cLine-1) then ' subkey not found within section
+					' insert line at end of section
+					' make space for new entry
+					TotalIniSize = TotalIniSize + 1
+		 			cIniSize = cIniSize + 1 ' local var
+		 			ReDim Preserve sIniLines(MaxIniFiles-1, TotalIniSize)
+
+					dim templines()
+					redim templines (cline+1-iSubkey)
+					dim i
+					for i=iSubkey to cLine-1
+						templines(i-iSubkey)= sIniLines(FileIndex,i) ' get pending lines
+					next 
+					sIniLines(FileIndex,iSubKey) = sNewLine ' set new value
+		   		cLine = cLine + 1
+					for i=iSubkey to cLine-1
+						sIniLines(FileIndex,i+1) = templines(i-iSubkey) ' restore pending lines
+					next 
+					' correct dictionary
+				dim allkeys
+  				allkeys = oDict.Keys              ' Get the keys.
+				  For i = 0 To oDict.Count -1 ' Iterate the array.
+				    if oDict.item (allkeys(i)) >= iSubkey then
+							oDict.item (allkeys(i)) = oDict.item (allkeys(i))+1
+						end if
+				  Next
+					exit function
+				end if
+
+      	iSubKey = iSubKey + 1	' next line
+   	Loop	' search loop
+
+   End Function
+
+Sub PointToCommaConverter(byref Value)
+    If (CStr(1.1) = "1.1") Then
+        Exit Sub
+    End If
+    
+    Dim TmpValue 
+    
+    
+    TmpValue = Value
+    TmpValue = Replace(TmpValue, ".", ",")
+
+   Value =  TmpValue
+End Sub
+
+
+  Public Function GetSubKeyValueDefault(sKey, sSubKey, ByRef Value, default)
+  ' returns true or false; Values returned in FoundValue
+	' as SetSubKeyValueDefault but sets value to default if not existing
+		GetSubKeyValueDefault = true
+		if not GetSubKeyValue(sKey,sSubKey, Value) then
+  			GetSubKeyValueDefault = SetSubKeyValue(sKey, sSubKey, default)
+			Value = default
+		end if
+
+
+
+
+  end function
+
+  Public Function GetDblSubKeyValueDefault(sKey, sSubKey, ByRef Value, default)
+	' special function to read Double-values; expects 3.14, not 3,14 as PI
+  ' returns true or false; Values returned in FoundValue
+	' as SetSubKeyValueDefault but sets value to default if not existing
+		dim strval
+		GetDblSubKeyValueDefault = true
+		if GetSubKeyValue(sKey,sSubKey, strval) then
+			dim OrgLocale
+ 			OrgLocale = SetLocale("en-gb") ' doubles in the ini-file are encoded as 3.141
+			Value = CDbl(strval)
+			SetLocale(OrgLocale) 
+		else
+  		  GetDblSubKeyValueDefault = SetDblSubKeyValue(sKey, sSubKey, default)
+              Value = default
+		end if
+end function
+
+  Public Function GetDblSubKeyValue(sKey, sSubKey, ByRef Value)
+	' special function to read Double-values; expects 3.14, not 3,14 as PI
+  ' returns true or false; Values returned in FoundValue
+	dim strval
+	GetDblSubKeyValue = true
+	if GetSubKeyValue(sKey,sSubKey, strval) then
+		dim OrgLocale
+		OrgLocale = SetLocale("en-gb") ' doubles in the ini-file are encoded as 3.141
+		Value = CDbl(strval)
+		SetLocale(OrgLocale) 
+	else
+		GetDblSubKeyValue = false
+		Value = CDbl(strval)
+	end if
+end function
+
+
+
+  Public Function SetDblSubKeyValue(sKey, sSubKey, Value)
+	' special function to write Double-values; sets 3.14, not 3,14 as PI
+  ' returns true or false
+    dim strval, dblval
+    dim OrgLocale
+    dblval = CDbl(Value)	' convert to double using original locale
+    OrgLocale = SetLocale("en-gb") ' doubles in the ini-file are encoded as 3.141
+      strval = CStr(DblVal)	' then convert to string using english locale
+      SetDblSubKeyValue = SetSubKeyValue(sKey, sSubKey, strval)
+    SetLocale(OrgLocale) 
+  end function
+
+end class
+
+' --- BUGASSERT (yes, it's for debugging) --------
+Sub BugAssert (bTest, sErrMsg)
+	' BugAssert is a Bruce McKinney creation.
+	'	It is used to test for intermediate results...
+	if bTest then	
+			Exit Sub 
+		end if 
+	MsgBox("Error Detected by BugAssert: " & sErrMsg)
+	WScript.Quit
+End Sub
+
+
+Sub DebugMsgbOx (sErrMsg)
+' display a messagebox containing sErrMsg  if the global const DebugMessages = true
+	if DebugMessages = true then
+		msgbox sErrMsg
+	end if
+end Sub

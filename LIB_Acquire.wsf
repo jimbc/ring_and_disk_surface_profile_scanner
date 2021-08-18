@@ -1,0 +1,1678 @@
+' Acquire class
+' F. Gitmans, FRT GmbH
+' Version 1.17
+' SetDllParam needs DOUBLE value
+' Version 1.2
+' added ActMeasValue2/Intensity2
+' added GetJoystickCoordinateCount/List
+
+' 03/07/08 [mme]: get property for TipSimulation...
+
+' changes in version 1.8 07/07/04 [tg]:
+'	function SetAllParameter returns false if min. one parameter could not be set 
+
+' changes in version 1.10 24/08/04 [AM]:
+'	Set and Get Subtract_Refrence 
+
+
+' changes in version 1.13 04/10/05 [AMO]:
+
+' Version 1.3
+' added LoadAPFFile(FileName)
+' added SetDirectParam (name,value)
+
+'changes in version 1.14 21/08/07 [MMB]
+'added GetCameraImageHeight()
+'added GetCameraImageWidth()
+'added GetCursorXPos()
+'added GetCursorYPos()
+'added MoveXYTableSpecialPos(nPos)
+'added MoveXYTableXYAbsPos(fXPos, fYPos)
+
+'changes in version 1.15 29/10/07 [MMB]
+'added method EnableJoystickDialog
+'fixed bug in GetDeviceXPos and GetDeviceYPos: nDevice parameter wasn't forwarded to AcquireServer
+
+'changes in version 1.16 18/03/09 [AMO]
+'added method GetSensorProperty
+'added method SetMeasMode
+'added method GetSerialNo
+
+'changes in version 1.16 18/06/09 [TGR]
+'added new scan rates
+
+'changes in version 1.17 18/06/09 [TGR]
+'error fixed in loading APF Parameter
+'APF.GetSubKeyValue "Parameter","FilterMeasurement_DoIt", value:  bFilterMeasurement_DoIt= CBool(value)
+'APF.GetSubKeyValue "Parameter","FilterMeasurement_FilterType", value:  nFilterMeasurement_FilterType= Cint(value)
+'APF.GetSubKeyValue "Parameter","FilterMeasurement_FilterParam", value:  fFilterMeasurement_FilterParam= Cdbl(value)
+
+'______________________________________________________________________________________
+Option Explicit
+    
+const SupportedAPFVersion	= 2
+    
+' Initialize ScriptingServer
+dim wshShell
+Set wshShell= CreateObject("WScript.Shell")
+    
+'######################################
+Function StartProgram(Path)
+	dim q
+	q=chr(34)	' quotation mark (")
+			' Start the program Acquire at the specified location
+			' If Acquire runs alreay, the function returns immediately
+	Dim fo	' as file object
+	Set fo = CreateObject("Scripting.FileSystemObject")
+
+	if not fo.FileExists(Path)then
+		StartProgram = false
+		exit function
+	end if
+
+	Path = q & Path & q			' add quotation mark to handle path name with spaces
+
+	dim state
+	state =  Acquire.GetState							 
+	if state = -1 then
+		wshShell.Run Path 	
+		dim TotalTime
+		TotalTime = 0
+		do while (state = -1) AND (TotalTime < 10000)
+			wscript.sleep 100
+			TotalTime = TotalTime + 100
+			state =  Acquire.GetState
+		loop	
+	end if
+	if state = -1 then
+    		StartProgram = false
+    	else
+    		StartProgram = true
+    	end if
+end Function
+
+'######################################
+Function SetBoolParameter (name, b)
+	' set a boolean parameter
+	dim str
+	if b then
+		str = "TRUE" 
+	else 
+		 str = "FALSE"
+	end if
+	SetBoolParameter = Acquire.AcquireServer.SetParam (name,str)
+end function
+
+'######################################
+Function IsAborted()
+	'***** Abfrage auf Programmabbruch **************
+	dim state
+		dim ret
+		IsAborted = false
+		state = Acquire.AcquireServer.GetState
+		if (state = -1) then
+			exit function ' Acquire not running
+		end if 
+		state = state AND 01 ' Bit 1 is set for abort
+		if (state = 1) then
+		  ret = MsgBox ("Acquire has been stopped" & VBCRLF & "Abort script ?", VBYesNo)
+			if (ret = VBYES) then
+	        WScript.Quit
+			end if
+			IsAborted = true
+		end if
+	end function
+
+class AcquireClass
+	dim AcquireServer ' the ScriptingServer
+
+	'Private vars for AcquireClass
+	Private	strDescription, strNameOfSet
+	Private 	intPointsPerLine, intLines	
+	Private	dblRangeX, dblRangeY, dblFactorRangeY, dblOffsetX, dblOffsetY, dblSpeedX, dblSpeedY,blnUseMaxSpeed
+	Private 	dblStartX, dblStartY, dblEndX, dblEndY
+	Private 	dblStepX, dblStepY
+	Private 	intRangeUnit, intOffsetUnit, intSpeedUnit
+	Private 	intDirection
+	Private 	intDoScanCont
+	Private	blnCoarseApproach, blnCoarseRetract
+	Private 	blnScanMode_3D
+	Private	dblZMotorDriveway
+	Private	intStepDelay
+	Private	blnDisplayStartBox
+	Private	blnWaitAtStartOfLine
+	Private	blnDoHysteresisCorrection
+	Private	blnBackScanDelay
+	Private	blnBackScanStep
+	Private	intStepXCount
+	Private	intStepYCount
+	Private	intStartBoxBehave
+	Private	blnOverrideSpeed
+	Private	blnScanBackMeas
+	Private	intSensorDelay
+	Private	intSensorErrorTime
+	Private	blnDoIntegrate
+	Private	intIntegrateOver
+	Private	blnApproachCenter
+	Private	dblApproachDistance
+	Private	dblApproachRadius
+	Private	intActScanSteps
+	Private	dblScanStepZOffset
+	Private	dblScanStepFirstRange
+	Private	blnScanStepUseDefault
+	Private	blnuse5mmCapability
+	Private	blnhas5mmCapability
+	Private	intPiezoRange
+	Private	blnzMotorAutoMove
+	Private	blnS1_CheckNanoError
+	Private	intS1_MeasRange
+	Private	blnS1_DoPiezo
+	Private	blnS1_DoFull
+	Private	intS3_MeasRate
+	Private	intS3_MinIntensity
+	Private	blnS3_UseDualScan
+	Private intS3_ScanMode
+	Private	dblS3_ScanFrequency
+	Private	fltS3_DutyCycle
+	Private	intS7_VoltRange
+	Private	intS7_ValChannel
+	Private	intS7_IntChannel
+	Private	dblS7_IntRange
+	Private	dblS7_minValidValue
+	Private	dblS7_maxValidValue
+	Private	dblS7_minValidIntensity
+	Private	dblS7_maxValidIntensity
+	Private	intS7_selectedUnit
+	Private	strS7_unit_0
+	Private	strS7_unit_1
+	Private	strS7_unit_2
+	Private	strS7_unit_3
+	Private	strS7_unit_4
+	Private	strS7_unit_5
+	Private	strS7_unit_6
+	Private	strS7_unit_7
+	Private	dblS7_minValidUnitValue
+	Private	dblS7_maxValidUnitValue
+	Private	strS6_Param 
+	Private	blnTipSimulation_DoIt
+	Private	dblTipSimulation_Angle
+	Private	dblTipSimulation_Radius
+	Private blnSubtract_Reference
+	Private strReferencePlane_Path
+	private dblThicknessLowLimit
+	private dblThicknessHighLimit
+	private bThicknessLimitsOn
+	private dblRefractive
+	private bFilterMeasurement_DoIt
+	private nFilterMeasurement_FilterType
+	private fFilterMeasurement_FilterParam
+	'----------------------------------------
+	Public Property Let ThicknessLimitsOn(value)
+		 bThicknessLimitsOn = value
+	end Property
+	
+	Public Property Get ThicknessLimitsOn()
+		ThicknessLimitsOn= bThicknessLimitsOn
+	end Property
+	'----------------------------------------
+	'----------------------------------------
+	Public Property Let ThicknessHighLimit(value)
+		 dblThicknessHighLimit = value
+	end Property
+	
+	Public Property Get ThicknessHighLimit()
+		ThicknessHighLimit= dblThicknessHighLimit
+	end Property
+	'----------------------------------------
+	Public Property Let ThicknessLowLimit(value)
+		 dblThicknessLowLimit = value
+	end Property
+	
+	Public Property Get ThicknessLowLimit()
+		ThicknessLowLimit= dblThicknessLowLimit
+	end Property
+	'----------------------------------------
+	Public Property Let Description(value)
+		 strDescription = value
+	end Property
+	
+	Public Property Get Description()
+		Description= strDescription
+	end Property
+	'----------------------------------------
+	Public Property Let NameOfSet(value)
+		 strNameOfSet = value
+	end Property
+	
+	Public Property Get NameOfSet()
+		NameOfSet= strNameOfSet
+	end Property
+	'----------------------------------------
+	Public Property Let PointsPerLine(value)
+		 intPointsPerLine = value
+	end Property
+	
+	Public Property Get PointsPerLine()
+		PointsPerLine= intPointsPerLine
+	end Property
+	'----------------------------------------
+	Public Property Let Lines(value)
+		 intLines= value
+	end Property
+	
+	Public Property Get Lines()
+		Lines= intLines
+	end Property
+	'----------------------------------------
+	Public Property Let RangeX(value)
+		 dblRangeX= value
+	end Property
+	
+	Public Property Get RangeX()
+		RangeX= dblRangeX
+	end Property
+	'----------------------------------------
+	Public	Property Let TipSimulation_DoIt(Value)
+		blnTipSimulation_DoIt = Value
+	end Property
+
+	Public	Property Get TipSimulation_DoIt()
+			TipSimulation_DoIt = blnTipSimulation_DoIt
+	end Property
+	'----------------------------------------
+	Public	Property Let TipSimulation_Angle(Value)
+			dblTipSimulation_Angle = Value
+	end Property
+
+	Public	Property Get TipSimulation_Angle()
+			TipSimulation_Angle = dblTipSimulation_Angle
+	end Property
+	'----------------------------------------
+	Public	Property Let TipSimulation_Radius(Value)
+			dblTipSimulation_Radius = Value
+	end Property
+
+	Public	Property Get TipSimulation_Radius()
+			TipSimulation_Radius = dblTipSimulation_Radius
+	end Property
+	'----------------------------------------
+	Public Property Let RangeY(value)
+		 dblRangeY= value
+	end Property
+	
+	Public Property Get RangeY()
+		RangeY= dblRangeY
+	end Property
+	'----------------------------------------
+	Public Property Let FactorRangeY(value)
+		 dblFactorRangeY= value
+	end Property
+	
+	Public Property Get FactorRangeY()
+		FactorRangeY= dblFactorRangeY
+	end Property
+	'----------------------------------------
+	Public Property Let OffsetX(value)
+		 dblOffsetX= value
+	end Property
+	
+	Public Property Get OffsetX()
+		OffsetX= dblOffsetX
+	end Property
+	
+	'----------------------------------------
+	Public Property Let OffsetY(value)
+		 dblOffsetY= value
+	end Property
+	
+	Public Property Get OffsetY()
+		OffsetY= dblOffsetY
+	end Property
+	'----------------------------------------
+	Public Property Let SpeedX(value)
+		 dblSpeedX= value
+	end Property
+	
+	Public Property Get SpeedX()
+		SpeedX= dblSpeedX
+	end Property
+	'----------------------------------------
+	Public Property Let SpeedY(value)
+		 dblSpeedY= value
+	end Property
+	
+	Public Property Get SpeedY()
+		SpeedY= dblSpeedY
+	end Property
+	'----------------------------------------
+	Public Property Let StartX(value)
+		 dblStartX= value
+	end Property
+	
+	Public Property Get StartX()
+		StartX= dblStartX
+	end Property
+	'----------------------------------------
+	Public Property Let StartY(value)
+		 dblStartY= value
+	end Property
+	
+	Public Property Get StartY()
+		StartY= dblStartY
+	end Property
+	'----------------------------------------
+	Public Property Let EndX(value)
+		 dblEndX= value
+	end Property
+	
+	Public Property Get EndX()
+		EndX= dblEndX
+	end Property
+	'----------------------------------------
+	Public Property Let EndY(value)
+		 dblEndY= value
+	end Property
+	
+	Public Property Get EndY()
+		EndY= dblEndY
+	end Property
+	'----------------------------------------
+	Public Property Let StepX(value)
+		 dblStepX= value
+	end Property
+	
+	Public Property Get StepX()
+		StepX= dblStepX
+	end Property
+	'----------------------------------------
+	Public Property Let StepY(value)
+		 dblStepY= value
+	end Property
+	
+	Public Property Get StepY()
+		StepY= dblStepY
+	end Property
+	'----------------------------------------
+	Public Property Let RangeUnit(value)
+		 intRangeUnit= value
+	end Property
+	
+	Public Property Get RangeUnit()
+		RangeUnit= intRangeUnit
+	end Property
+	'----------------------------------------
+	Public Property Let OffsetUnit(value)
+		 intOffsetUnit= value
+	end Property
+	
+	Public Property Get OffsetUnit()
+		OffsetUnit= intOffsetUnit
+	end Property
+	'----------------------------------------
+	Public Property Let SpeedUnit(value)
+		 intSpeedUnit= value
+	end Property
+	
+	Public Property Get SpeedUnit()
+		SpeedUnit= intSpeedUnit
+	end Property
+	'----------------------------------------
+	Public Property Let Direction(value)
+		 intDirection= value
+	end Property
+	
+	Public Property Get Direction()
+		Direction= intDirection
+	end Property
+	'----------------------------------------
+	Public Property Let DoScanCont(value)
+		 intDoScanCont= value
+	end Property
+	
+	Public Property Get DoScanCont()
+		DoScanCont= intDoScanCont
+	end Property
+	'----------------------------------------
+	Public Property Let CoarseApproach(value)
+		 blnCoarseApproach= value
+	end Property
+	
+	Public Property Get CoarseApproach()
+		CoarseApproach= blnCoarseApproach
+	end Property
+	'-----------------------------------------
+	Public Property Let UseMaxSpeed(value)
+		 blnUseMaxSpeed= value
+	end Property
+	
+	Public Property Get UseMaxSpeed()
+		UseMaxSpeed= blnUseMaxSpeed
+	end Property
+	'----------------------------------------
+	Public Property Let CoarseRetract(value)
+		 blnCoarseRetract= value
+	end Property
+	
+	Public Property Get CoarseRetract()
+		CoarseRetract= blnCoarseRetract
+	end Property
+	'----------------------------------------
+	Public Property Let ScanMode_3D(value)
+		 blnScanMode_3D= value
+	end Property
+	
+	Public Property Get ScanMode_3D()
+		ScanMode_3D= blnScanMode_3D
+	end Property
+	'----------------------------------------
+	Public Property Let ZMotorDriveway(value)
+		 dblZMotorDriveway= value
+	end Property
+	
+	Public Property Get ZMotorDriveway()
+		ZMotorDriveway= dblZMotorDriveway
+	end Property
+	'----------------------------------------
+	Public Property Let StepDelay(value)
+		 intStepDelay= value
+	end Property
+	
+	Public Property Get StepDelay()
+		StepDelay= intStepDelay
+	end Property
+	'----------------------------------------
+	Public Property Let DisplayStartBox(value)
+		 blnDisplayStartBox= value
+	end Property
+	
+	Public Property Get DisplayStartBox()
+		DisplayStartBox= blnDisplayStartBox
+	end Property
+	'----------------------------------------
+	Public Property Let WaitAtStartOfLine(value)
+		 blnWaitAtStartOfLine= value
+	end Property
+	
+	Public Property Get WaitAtStartOfLine()
+		WaitAtStartOfLine= blnWaitAtStartOfLine
+	end Property
+	'----------------------------------------
+	Public Property Let DoHysteresisCorrection(value)
+		 blnDoHysteresisCorrection= value
+	end Property
+	
+	Public Property Get DoHysteresisCorrection()
+		DoHysteresisCorrection= blnDoHysteresisCorrection
+	end Property
+	'----------------------------------------
+	Public Property Let BackScanDelay(value)
+		 blnBackScanDelay= value
+	end Property
+	
+	Public Property Get BackScanDelay()
+		BackScanDelay= blnBackScanDelay
+	end Property
+	'----------------------------------------
+	Public Property Let BackScanStep(value)
+		 blnBackScanStep= value
+	end Property
+	
+	Public Property Get BackScanStep()
+		BackScanStep= blnBackScanStep
+	end Property
+	'----------------------------------------
+	Public Property Let StepXCount(value)
+		 intStepXCount= value
+	end Property
+	
+	Public Property Get StepXCount()
+		StepXCount= intStepXCount
+	end Property
+	'----------------------------------------
+	Public Property Let StepYCount(value)
+		 intStepYCount= value
+	end Property
+	
+	Public Property Get StepYCount()
+		StepYCount= intStepYCount
+	end Property
+	'----------------------------------------
+	Public Property Let StartBoxBehave(value)
+		 intStartBoxBehave= value
+	end Property
+	
+	Public Property Get StartBoxBehave()
+		StartBoxBehave= intStartBoxBehave
+	end Property
+	'----------------------------------------
+	Public Property Let OverrideSpeed(value)
+		 blnOverrideSpeed= value
+	end Property
+	
+	Public Property Get OverrideSpeed()
+		OverrideSpeed= blnOverrideSpeed
+	end Property
+	'----------------------------------------
+	Public Property Let ScanBackMeas(value)
+		 blnScanBackMeas= value
+	end Property
+	
+	Public Property Get ScanBackMeas()
+		ScanBackMeas= blnScanBackMeas
+	end Property
+	'----------------------------------------
+	Public Property Let SensorDelay(value)
+		 intSensorDelay= value
+	end Property
+	
+	Public Property Get SensorDelay()
+		SensorDelay= intSensorDelay
+	end Property
+	'----------------------------------------
+	Public Property Let SensorErrorTime(value)
+		 intSensorErrorTime= value
+	end Property
+	
+	Public Property Get SensorErrorTime()
+		SensorErrorTime= intSensorErrorTime
+	end Property
+	'----------------------------------------
+	Public Property Let DoIntegrate(value)
+		 blnDoIntegrate= value
+	end Property
+	
+	Public Property Get DoIntegrate()
+		DoIntegrate= blnDoIntegrate
+	end Property
+	'----------------------------------------
+	Public Property Let IntegrateOver(value)
+		 intIntegrateOver= value
+	end Property
+	
+	Public Property Get IntegrateOver()
+		IntegrateOver= intIntegrateOver
+	end Property
+	'----------------------------------------
+	Public Property Let ApproachCenter(value)
+		 blnApproachCenter= value
+	end Property
+	
+	Public Property Get ApproachCenter()
+		ApproachCenter= blnApproachCenter
+	end Property
+	'----------------------------------------
+	Public Property Let ApproachDistance(value)
+		 dblApproachDistance= value
+	end Property
+	
+	Public Property Get ApproachDistance()
+		ApproachDistance= dblApproachDistance
+	end Property
+	'----------------------------------------
+	Public Property Let ApproachRadius(value)
+		 dblApproachRadius= value
+	end Property
+	
+	Public Property Get ApproachRadius()
+		ApproachRadius= dblApproachRadius
+	end Property
+	'----------------------------------------
+	Public Property Let ActScanSteps(value)
+		 intActScanSteps= value
+	end Property
+	
+	Public Property Get ActScanSteps()
+		ActScanSteps= intActScanSteps
+	end Property
+	'----------------------------------------
+	Public Property Let ScanStepZOffset(value)
+		 dblScanStepZOffset= value
+	end Property
+	
+	Public Property Get ScanStepZOffset()
+		ScanStepZOffset= dblScanStepZOffset
+	end Property
+	'----------------------------------------
+	Public Property Let ScanStepFirstRange(value)
+		 dblScanStepFirstRange= value
+	end Property
+	
+	Public Property Get ScanStepFirstRange()
+		ScanStepFirstRange= dblScanStepFirstRange
+	end Property
+	'-----------------------------------------
+	Public Property Let Refractive(value)
+		 dblRefractive= value
+	end Property
+	
+	Public Property Get Refractive()
+		Refractive= dblRefractive
+	end Property	
+	
+	'----------------------------------------
+	Public Property Let ScanStepUseDefault(value)
+		 blnScanStepUseDefault= value
+	end Property
+	
+	Public Property Get ScanStepUseDefault()
+		ScanStepUseDefault= blnScanStepUseDefault
+	end Property
+	'----------------------------------------
+	Public Property Let use5mmCapability(value)
+		 blnuse5mmCapability= value
+	end Property
+	
+	Public Property Get use5mmCapability()
+		use5mmCapability= blnuse5mmCapability
+	end Property
+	'----------------------------------------
+	Public Property Let has5mmCapability(value)
+		 blnhas5mmCapability= value
+	end Property
+	
+	Public Property Get has5mmCapability()
+		has5mmCapability= blnhas5mmCapability
+	end Property
+	'----------------------------------------
+	Public Property Let PiezoRange(value)
+		 intPiezoRange= value
+	end Property
+	
+	Public Property Get PiezoRange()
+		PiezoRange= intPiezoRange
+	end Property
+	'----------------------------------------
+	Public Property Let MotorAutoMove(value)
+		 blnzMotorAutoMove= value
+	end Property
+	
+	Public Property Get zMotorAutoMove()
+		zMotorAutoMove= blnzMotorAutoMove
+	end Property
+	'----------------------------------------
+	Public Property Let S1_CheckNanoError(value)
+		 blnS1_CheckNanoError= value
+	end Property
+	
+	Public Property Get zS1_CheckNanoError()
+		S1_CheckNanoError= blnS1_CheckNanoError
+	end Property
+	'----------------------------------------
+	Public Property Let S1_MeasRange(value)
+		 intS1_MeasRange= value
+	end Property
+	
+	Public Property Get S1_MeasRange()
+		S1_MeasRange= intS1_MeasRange
+	end Property
+	'----------------------------------------
+	Public Property Let S1_DoPiezo(value)
+		 S1_DoPiezo= value
+	end Property
+	
+	Public Property Get S1_DoPiezo()
+		S1_DoPiezo= blnS1_DoPiezo
+	end Property
+	'----------------------------------------
+	Public Property Let S1_DoFull(value)
+		 S1_DoFull= value
+	end Property
+	
+	Public Property Get S1_DoFull()
+		S1_DoFull= blnS1_DoFull
+	end Property
+	'----------------------------------------
+	Public Property Let S3_MeasRate(value)
+		 intS3_MeasRate= value
+	end Property
+	
+	Public Property Get S3_MeasRate()
+		S3_MeasRate= intS3_MeasRate
+	end Property
+	'----------------------------------------
+	Public Property Let S3_MinIntensity(value)
+		 intS3_MinIntensity= value
+	end Property
+	
+	Public Property Get S3_MinIntensity()
+		S3_MinIntensity= intS3_MinIntensity
+	end Property
+	'----------------------------------------
+	Public Property Let S3_UseDualScan(value)
+		 blnS3_UseDualScan= value
+	end Property
+	
+	Public Property Get S3_UseDualScan()
+		S3_UseDualScan= blnS3_UseDualScan
+	end Property
+	'----------------------------------------
+	Public Property Let S3_ScanFrequency(value)
+		 dblS3_ScanFrequency= value
+	end Property
+	
+	Public Property Get S3_ScanFrequency()
+		S3_ScanFrequency= dblS3_ScanFrequency
+	end Property
+	'----------------------------------------
+	Public Property Let S3_DutyCycle(value)
+		 fltS3_DutyCycle= value
+	end Property
+	
+	Public Property Get S3_DutyCycle()
+		S3_DutyCycle= fltS3_DutyCycle
+	end Property
+	'----------------------------------------
+	Public Property Let S7_VoltChannel(value)
+		 intS7_VoltChannel= value
+	end Property
+	
+	Public Property Get S7_VoltChannel()
+		S7_VoltChannel= intS7_VoltChannel
+	end Property
+	'----------------------------------------
+	Public Property Let S7_ValChannel(value)
+		 intS7_ValChannel= value
+	end Property
+	
+	Public Property Get S7_ValChannel()
+		S7_ValChannel= intS7_ValChannel
+	end Property
+	'----------------------------------------
+	Public Property Let S7_IntChannel(value)
+		 intS7_IntChannel= value
+	end Property
+	
+	Public Property Get S7_IntChannel()
+		S7_IntChannel= intS7_IntChannel
+	end Property
+	'----------------------------------------
+	Public Property Let S7_minValidValue(value)
+		 dblS7_minValidValue= value
+	end Property
+	
+	Public Property Get S7_minValidValue()
+		S7_minValidValue= dblS7_minValidValue
+	end Property
+	'----------------------------------------
+	Public Property Let S7_maxValidValue(value)
+		 dblS7_maxValidValue= value
+	end Property
+	
+	Public Property Get S7_maxValidValue()
+		S7_maxValidValue= dblS7_maxValidValue
+	end Property
+	'----------------------------------------
+	Public Property Let S7_minValidIntensity(Intensity)
+		 dblS7_minValidIntensity= Intensity
+	end Property
+	
+	Public Property Get S7_minValidIntensity()
+		S7_minValidIntensity= dblS7_minValidIntensity
+	end Property
+	'----------------------------------------
+	Public Property Let S7_maxValidIntensity(value)
+		 dblS7_maxValidIntensity= value
+	end Property
+	
+	Public Property Get S7_maxValidIntensity()
+		S7_maxValidIntensity= dblS7_maxValidIntensity
+	end Property
+	'----------------------------------------
+	Public Property Let S7_selectedUnit(value)
+		 S7_selectedUnit= value
+	end Property
+	
+	Public Property Get S7_selectedUnit()
+		S7_selectedUnit= intS7_selectedUnit
+	end Property
+	'----------------------------------------
+	Public Property Let S7_unit_0(value)
+		 strS7_unit_0= value
+	end Property
+	
+	Public Property Get S7_unit_0()
+		S7_unit_0= strS7_unit_0
+	end Property
+	'----------------------------------------
+	Public Property Let S7_unit_1(value)
+		 strS7_unit_1= value
+	end Property
+	
+	Public Property Get S7_unit_1()
+		S7_unit_1= strS7_unit_1
+	end Property
+	'----------------------------------------
+	Public Property Let S7_unit_2(value)
+		 strS7_unit_2= value
+	end Property
+	
+	Public Property Get S7_unit_2()
+		S7_unit_2= strS7_unit_2
+	end Property
+	'----------------------------------------
+	Public Property Let S7_unit_3(value)
+		 strS7_unit_3= value
+	end Property
+	
+	Public Property Get S7_unit_3()
+		S7_unit_3= strS7_unit_3
+	end Property
+	'----------------------------------------
+	Public Property Let S7_unit_4(value)
+		 strS7_unit_4= value
+	end Property
+	
+	Public Property Get S7_unit_4()
+		S7_unit_4= strS7_unit_4
+	end Property
+	'----------------------------------------
+	Public Property Let S7_unit_5(value)
+		 strS7_unit_5= value
+	end Property
+	
+	Public Property Get S7_unit_5()
+		S7_unit_5= strS7_unit_5
+	end Property
+	'----------------------------------------
+	Public Property Let S7_unit_6(value)
+		 strS7_unit_6= value
+	end Property
+	
+	Public Property Get S7_unit_6()
+		S7_unit_6= strS7_unit_6
+	end Property
+	'----------------------------------------
+	Public Property Let S7_unit_7(value)
+		 strS7_unit_7= value
+	end Property
+	
+	Public Property Get S7_unit_7()
+		S7_unit_7= strS7_unit_7
+	end Property
+	'----------------------------------------
+	Public Property Let S7_minValidUnitValue(value)
+		 dblS7_minValidUnitValue= value
+	end Property
+	
+	Public Property Get S7_minValidUnitValue()
+		S7_minValidUnitValue= dblS7_minValidUnitValue
+	end Property
+	'----------------------------------------
+	Public Property Let S7_maxValidUnitValue(value)
+		 dblS7_maxValidUnitValue= value
+	end Property
+	
+	Public Property Get S7_maxValidUnitValue()
+		S7_maxValidUnitValue= dblS7_maxValidUnitValue
+	end Property
+	'----------------------------------------
+	Public Property Let S6_Param(value)
+		 strS6_Param= value
+	end Property
+	
+	Public Property Get S6_Param()
+		S6_Param= strS6_Param
+	end Property
+
+	'---------------------------------------------------------------
+	Public Property Let Subtract_Reference(value)
+		 blnSubtract_Reference= value
+	end Property
+	
+	Public Property Get Subtract_Reference()
+		Subtract_Reference= blnSubtract_Reference
+	end Property
+    '----------------------------------------------
+
+	Public Property Let ReferencePlane_Path(value)
+		 strReferencePlane_Path= value
+	end Property
+	
+	Public Property Get ReferencePlane_Path()
+		ReferencePlane_Path= strReferencePlane_Path
+	end Property
+	
+
+
+	Public Property Let FilterMeasurement_DoIt(value)
+		 bFilterMeasurement_DoIt= value
+	end Property
+	
+	Public Property Get FilterMeasurement_DoIt()
+		FilterMeasurement_DoIt= bFilterMeasurement_DoIt
+	end Property
+
+
+
+	Public Property Let FilterMeasurement_FilterType(value)
+		 nFilterMeasurement_FilterType= value
+	end Property
+	
+	Public Property Get FilterMeasurement_FilterType()
+		FilterMeasurement_FilterType= nFilterMeasurement_FilterType
+	end Property
+
+	Public Property Let FilterMeasurement_FilterParam(value)
+		 fFilterMeasurement_FilterParam= value
+	end Property
+	
+	Public Property Get FilterMeasurement_FilterParam()
+		FilterMeasurement_FilterParam= fFilterMeasurement_FilterParam
+	end Property
+
+
+	
+
+	'----------------------------------------
+
+	Private Sub Class_Initialize	' Setup Initialize event.
+	End Sub
+
+	Private Sub Class_Terminate	' Setup Terminate event.
+	End Sub
+
+	Function Init
+		' Initialize Acquire Clas
+		Dim found
+		Init = false
+		On Error Resume next
+		Set AcquireServer = CreateObject("Scriptingserver.Application")
+		found = (err.number = 0)
+		On Error Goto 0
+		if not found OR not IsObject (AcquireServer) then
+			exit Function
+		end if 
+		Init = true
+	end Function
+
+    Public Function LoadAPFFile(FileName)
+
+		LoadAPFFile = AcquireServer.LoadAPFFile(FileName)
+
+	end function
+
+	Public Function SetDirectParam (name,value)
+		SetDirectParam = AcquireServer.SetDirecParam (name, value)
+	end function
+
+	Public Function ReadAPFFile(FileName)
+		' Read all parameter from a file
+		Dim APF
+		Dim Buffer
+		Dim ret
+		Dim value
+		Dim ok
+		Dim OrgLocale
+		
+		ReadAPFFile = false
+		blnS3_UseDualScan = false
+		Set APF = New IniAccess	
+		ok = APF.GetFreeBuffer(Buffer) and APF.LoadIniFile (FileName, Buffer, false)
+		AcquireError.OnError (ok = false), 100, DoError, FileName
+		if not ok then
+			exit Function
+		end if
+		ret = APF.GetSubKeyValue("Origin", "DLL Version", value)
+		ok = CInt(value) = SupportedAPFVersion
+		AcquireError.OnError not ok, 101, DoError, ""
+		if not ok then
+			exit Function
+		end if
+		OrgLocale = SetLocale("en-gb") ' doubles in the ini-file are encoded as 3.141
+		
+		'TipSimulation_DoIt=0
+		'TipSimulation_Angle=90
+		'TipSimulation_Radius=2
+
+			APF.GetSubKeyValue "Parameter","Subtract_Reference",value: blnSubtract_Reference= CBool(value)
+			APF.GetSubKeyValue "Parameter","ReferencePlane_Path",value: strReferencePlane_Path= CStr(value)
+
+       		APF.GetSubKeyValue "Parameter", "Description", value: Description = value
+       		APF.GetSubKeyValue "Parameter", "NameOfSet",value: strNameOfSet = value
+		'Last Changes Cint is replaced with CLng
+       		APF.GetSubKeyValue "Parameter", "PointsPerLine", value: intPointsPerLine= CLng (value)
+       		APF.GetSubKeyValue "Parameter", "Lines", value: intLines= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "RangeX", value: dblRangeX= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "RangeY", value: dblRangeY= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "FactorRangeY", value: dblFactorRangeY = CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "OffsetX", value:  dblOffsetX = CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "OffsetY", value:  dblOffsetY = CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "SpeedX", value:  dblSpeedX = CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "UseMaxSpeed", value:  blnUseMaxSpeed= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "SpeedY", value:  dblSpeedY= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "StartX", value:  dblStartX= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "StartY", value:  dblStartY= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "EndX", value:  dblEndX= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "EndY", value:  dblEndY= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "StepX", value:  dblStepX= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "StepY", value:  dblStepY= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "RangeUnit", value:  intRangeUnit= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "OffsetUnit", value:  intOffsetUnit= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "SpeedUnit", value:  intSpeedUnit= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "Direction", value:  intDirection= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "DoScanCont", value:  intDoScanCont= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "CoarseApproach", value:  blnCoarseApproach= CBool(value)			
+       		APF.GetSubKeyValue "Parameter", "CoarseRetract", value:  blnCoarseRetract= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "ScanMode_3D", value:  blnScanMode_3D= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "ZMotorDriveway", value:  dblZMotorDriveway= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "StepDelay", value:  intStepDelay= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "DisplayStartBox", value:  blnDisplayStartBox= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "WaitAtStartOfLine", value:  blnWaitAtStartOfLine= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "DoHysteresisCorrection", value:  blnDoHysteresisCorrection= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "BackScanDelay", value:  blnBackScanDelay= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "BackScanStep", value:  blnBackScanStep= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "StepXCount", value:  intStepXCount= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "StepYCount", value:  intStepYCount= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "StartBoxBehave", value:  intStartBoxBehave= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "OverrideSpeed", value:  blnOverrideSpeed= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "ScanBackMeas", value:  blnScanBackMeas= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "SensorDelay", value:  intSensorDelay= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "SensorErrorTime", value:  intSensorErrorTime= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "DoIntegrate", value:  blnDoIntegrate= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "IntegrateOver", value:  intIntegrateOver= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "ApproachCenter", value:  blnApproachCenter= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "ApproachDistance", value:  dblApproachDistance= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "ApproachRadius", value:  dblApproachRadius= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "ActScanSteps", value:  intActScanSteps= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "ScanStepZOffset", value: dblScanStepZOffset= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "ScanStepFirstRange", value:  dblScanStepFirstRange= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "ScanStepUseDefault", value:  blnScanStepUseDefault= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "use5mmCapability", value:  blnuse5mmCapability= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "has5mmCapability", value:  blnhas5mmCapability= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "PiezoRange", value:  intPiezoRange= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "zMotorAutoMove", value:  blnzMotorAutoMove= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "S1_CheckNanoError", value:  blnS1_CheckNanoError= CBool(value)
+       		APF.GetSubKeyValue "Parameter", "S1_MeasRange", value:  intS1_MeasRange= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "S1_DoPiezo", value:  blnS1_DoPiezo= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "S1_DoFull", value:  blnS1_DoFull= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "S3_MeasRate", value:  intS3_MeasRate= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "S3_MinIntensity", value:  intS3_MinIntensity= CInt(value)
+		    ret = APF.GetSubKeyValue("Parameter", "S3_UseDualScan", value)	' only for old apf files
+			if (ret = true) then
+			    blnS3_UseDualScan= CBool(value)
+			else
+				blnS3_UseDualScan = false
+			end if
+			ret = APF.GetSubKeyValue("Parameter", "S3_ScanMode", value)	' for new apf files
+			if (ret = true) then
+			    intS3_ScanMode= CInt(value) 
+			    if (intS3_ScanMode = 1 ) then
+					blnS3_UseDualScan = true
+				end if
+			end if
+
+		    APF.GetSubKeyValue "Parameter", "S3_ScanFrequency", value:  dblS3_ScanFrequency= CDbl(value)	
+		    APF.GetSubKeyValue "Parameter", "S3_DutyCycle", value:  fltS3_DutyCycle= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "S7_VoltRange", value:  intS7_VoltRange= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "S7_ValChannel", value:  intS7_ValChannel= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "S7_IntChannel", value:  intS7_IntChannel= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "S7_IntRange", value:  dblS7_IntRange= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "S7_minValidValue", value:  dblS7_minValidValue= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "S7_maxValidValue", value:  dblS7_maxValidValue= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "S7_minValidIntensity", value:  dblS7_minValidIntensity= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "S7_maxValidIntensity", value:  dblS7_maxValidIntensity= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "S7_selectedUnit", value:  intS7_selectedUnit= CInt(value)
+       		APF.GetSubKeyValue "Parameter", "S7_unit_0", value:  strS7_unit_0= value
+       		APF.GetSubKeyValue "Parameter", "S7_unit_1", value:  strS7_unit_1= value
+       		APF.GetSubKeyValue "Parameter", "S7_unit_2", value:  strS7_unit_2= value
+       		APF.GetSubKeyValue "Parameter", "S7_unit_3", value:  strS7_unit_3= value
+       		APF.GetSubKeyValue "Parameter", "S7_unit_4", value:  strS7_unit_4= value
+       		APF.GetSubKeyValue "Parameter", "S7_unit_5", value:  strS7_unit_5= value
+       		APF.GetSubKeyValue "Parameter", "S7_unit_6", value:  strS7_unit_6= value
+       		APF.GetSubKeyValue "Parameter", "S7_unit_7", value:  strS7_unit_7= value
+       		APF.GetSubKeyValue "Parameter", "S7_minValidUnitValue", value:  dblS7_minValidUnitValue= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "S7_maxValidUnitValue", value:  dblS7_maxValidUnitValue= CDbl(value)
+       		APF.GetSubKeyValue "Parameter", "S6_Param", value:  strS6_Param= value
+			APF.GetSubKeyValue "Parameter","TipSimulation_DoIt",Value:		blnTipSimulation_DoIt	= CBool(value)
+			APF.GetSubKeyValue "Parameter","TipSimulation_Angle",Value:	dblTipSimulation_Angle	= CDbl(value)
+			APF.GetSubKeyValue "Parameter","TipSimulation_Radius",Value:	dblTipSimulation_Radius	= CDbl(value)
+			APF.GetSubKeyValue "Parameter","Refractive",Value:	dblRefractive	= CDbl(value)
+
+			APF.GetSubKeyValue "Parameter","ThicknessLowLimit",  value:  dblThicknessLowLimit= CDbl(value)
+			APF.GetSubKeyValue "Parameter","ThicknessHighLimit",  value:  dblThicknessHighLimit= CDbl(value)
+			APF.GetSubKeyValue "Parameter","ThicknessLimitsOn", value: bThicknessLimitsOn= CBool(value)
+											
+					
+			APF.GetSubKeyValue "Parameter","FilterMeasurement_DoIt", value:  bFilterMeasurement_DoIt= CBool(value)
+			APF.GetSubKeyValue "Parameter","FilterMeasurement_FilterType", value:  nFilterMeasurement_FilterType= Cint(value)
+			APF.GetSubKeyValue "Parameter","FilterMeasurement_FilterParam", value:  fFilterMeasurement_FilterParam= Cdbl(value)
+
+
+		SetLocale(OrgLocale) 
+		APF.CloseIniFile
+		Set APF = Nothing
+       		ReadAPFFile = true
+	end Function 'ReadAPFFile
+    
+    	'-------------------------------------
+    	' exported functions from ScriptingServer.dll
+    
+	Public Function MoveXYTable (x,y)
+		MoveXYTable = AcquireServer.MoveXYTable (x, y)
+	end function
+	
+	Public Function SetParam (name,value)
+		SetParam = AcquireServer.SetParam (name, value)
+	end function
+	
+	Public Function Approach
+		Approach = AcquireServer.Approach
+	end function
+	
+	Public Function Retract
+		Retract= AcquireServer.Retract
+	end function
+	
+	Public Function StartScan
+		IsAborted()
+		StartScan= AcquireServer.StartScan
+		IsAborted()
+	end function
+	
+	Public Function TimeToScan
+		TimeToScan= AcquireServer.TimeToScan
+	end function
+	
+	Public Function StopScan
+		StopScan= AcquireServer.StopScan
+	end function
+	
+	Public Function SaveData (theName, theType)
+		SaveData = AcquireServer.SaveData (theName, theType)
+	end function
+	
+	Public Function MakeReferenz
+		MakeReferenz = AcquireServer.MakeReferenz
+	end function
+	
+	Public Function IfScanActive
+		IfScanActive = AcquireServer.IfScanActive
+	end function
+	
+	Public Function IfScanNotActive
+		IfScanNotActive = AcquireServer.IfScanNotActive
+	end function
+	
+	Public Function DarkCorrection
+		DarkCorrection = AcquireServer.DarkCorrection
+	end function
+	
+	Public Function RunDll (theName)
+		RunDll = AcquireServer.RunDll(theName)
+	end function
+	
+	Public Function GetDllParam (theName)
+		GetDllParam= AcquireServer.GetDllParam (theName)
+	end function
+	
+	Public Function SetDllParam (theName, value)
+		' this function fails, if value is not DOUBLE !!!
+		SetDllParam = AcquireServer.SetDllParam (theName, CDbl(value))
+	end function
+	
+	Public Function SetView (value)
+		SetView = AcquireServer.SetView(value)
+	end function
+
+	Public Function SelectView (BufferType)
+		SelectView = AcquireServer.SelectView(BufferType)
+	end function
+	
+	Public Function GetParam (theName)
+		GetParam = AcquireServer.GetParam(theName)
+	end function
+	
+	Public Function GetZPos
+		GetZPos = AcquireServer.GetZPos
+	end function
+	
+	Public Function GotoZPos(value)
+		GotoZPos = AcquireServer.GotoZPos (value)
+	end function
+	
+	Public Function MoveZMotor(value, direction)
+		MoveZMotor = AcquireServer.MoveZMotor(value, direction)
+	end function
+	
+	Public Function ResetZPos
+		ResetZPos = AcquireServer.ResetZPos
+	end function
+	
+	Public Function ActMeasValue
+		ActMeasValue = AcquireServer.ActMeasValue
+	end function
+	
+	Public Function ActMeasIntensity
+		ActMeasIntensity = AcquireServer.ActMeasIntensity
+	end function
+
+	' sensor 2 / Topography 2
+	Public Function ActMeasValue2
+		ActMeasValue2 = AcquireServer.ActMeasValue2
+	end function
+    
+	Public Function ActMeasIntensity2
+		ActMeasIntensity2 = AcquireServer.ActMeasIntensity2
+	end function
+    
+	
+	Public Function SetScriptData (value)
+		SetScriptData = AcquireServer.SetScriptData (value)
+	end function
+	
+	Public Function Make2DTopographie (DataSize)
+		Make2DTopographie = AcquireServer.Make2DTopographie (DataSize)
+	end function
+	
+	Public Function Make2DTopography (DataSize, theSize, theSizeFlag)
+		Make2DTopography = AcquireServer.Make2DTopography(DataSize, theSize, theSizeFlag)
+	end function
+	
+	Public Function LoadFRTFile(theName)
+		LoadFRTFile = false
+	  Dim fso
+	  Set fso = CreateObject("Scripting.FileSystemObject")
+	  if (fso.FileExists(theName)) Then
+			LoadFRTFile = AcquireServer.LoadFile(theName)
+		end if
+	end function
+	
+	Public Function GetXPos
+		GetXPos = AcquireServer.GetXPos
+	end function
+	
+	Public Function GetYPos
+		GetYPos = AcquireServer.GetYPos
+	end function
+	
+	Public Function GetState
+		GetState = AcquireServer.GetState
+	end function
+	
+	Public Function DoResume
+		DoResume = AcquireServer.Resume
+	end function
+	
+	Public Function DoAbort
+		DoAbort = AcquireServer.Abort
+	end function
+    
+	Public Function GetDataBuffer(BufferType)
+		' store actual data to temporary file in special file format
+		' BufferType can be
+		'				DUMMY_BUFFER	=	0x80000000,
+		'				DIB_COUNTER		=	0x0f000000,
+		'				PIEZO			=	0x00000001,
+		'				INTENSITY		=	0x00000002,
+		'				TOPOGRAPHIE		=	0x00000004,
+		'				REAL_PART		=   0x00000008,
+		'				IM_PART			=	0x00000010,
+		'				FILTER			=	0x00000020,
+		'				KAMERAPICTURE	=	0x00000040,
+		'				DIBFROMFILE		=	0x00000100,
+		'				INTENSITY2		=	0x01000002,	//for thickness
+		'				TOPOGRAPHIE2	=	0x01000004,	//for thickness
+		'				EXTENDED_BUFFER	=	0x00010000,	// extended bit	
+		'				EX_TOPOGRAPHIE	=	0x00010004,	// extended Buffers alway have the number of the or(Buffer,0x10000)
+		'				USERBUFFER		=	0x00100000
+		'				// Mask			BitDescription
+		'				// 0000ffff		BufferName
+		'				// 00010000		extented
+		'				// 00100000		UserBuffer
+		'				// 0f000000		counter	0-15
+		GetDataBuffer = AcquireServer.GetDataBuffer(BufferType)
+	end function
+	
+	Public Function WriteBufferToFile(BufferType)
+		' store actual data to temporary file in special file format
+		' BufferType can be
+		'				DUMMY_BUFFER	=	0x80000000,
+		'				DIB_COUNTER		=	0x0f000000,
+		'				PIEZO			=	0x00000001,
+		'				INTENSITY		=	0x00000002,
+		'				TOPOGRAPHIE		=	0x00000004,
+		'				REAL_PART		=   0x00000008,
+		'				IM_PART			=	0x00000010,
+		'				FILTER			=	0x00000020,
+		'				KAMERAPICTURE	=	0x00000040,
+		'				DIBFROMFILE		=	0x00000100,
+		'				INTENSITY2		=	0x01000002,	//for thickness
+		'				TOPOGRAPHIE2	=	0x01000004,	//for thickness
+		'				EXTENDED_BUFFER	=	0x00010000,	// extended bit	
+		'				EX_TOPOGRAPHIE	=	0x00010004,	// extended Buffers alway have the number of the or(Buffer,0x10000)
+		'				USERBUFFER		=	0x00100000
+		'				// Mask			BitDescription
+		'				// 0000ffff		BufferName
+		'				// 00010000		Erweitert
+		'				// 00100000		UserBuffer
+		'				// 0f000000		counter	0-15
+		WriteBufferToFile = AcquireServer.WriteBufferToFile(BufferType)
+	end function
+	 
+	Public Function GetDataBufferTempFilename
+		GetDataBufferTempFilename = AcquireServer.GetDataBufferTempFilename
+	end function
+    
+	Public Function GetVersionsNumber_FRT_DLL
+		GetVersionsNumber_FRT_DLL = AcquireServer.GetVersionsNumber_FRT_DLL
+	end function
+	
+	Public Function GetVersionsNumber
+		GetVersionsNumber = AcquireServer.GetVersionsNumber
+	end function
+	
+	Public Function XYMoveAbsolute (xpos, ypos)
+		XYMoveAbsolute = AcquireServer.XYMoveAbsolute (xpos, ypos)
+	end function
+	
+	Public Function XYMoveRelative (xpos, ypos)
+		XYMoveRelative = AcquireServer.XYMoveRelative (xpos, ypos)
+	end function
+	
+	Public Function XYMoveAbsoluteNoWait (xpos, ypos)
+		XYMoveAbsoluteNoWait = AcquireServer.XYMoveAbsoluteNoWait (xpos, ypos)
+	end function
+	
+	Public Function XYMoveRelativeNoWait (xpos, ypos)
+		XYMoveRelativeNoWait = AcquireServer.XYMoveRelativeNoWait (xpos, ypos)
+	end function
+	
+	Public Function ZMoveAbsolute (zpos)
+		ZMoveAbsolute = AcquireServer.ZMoveAbsolute (zpos)
+	end function
+	
+	Public Function ZMoveRelative (zpos)
+		ZMoveRelative = AcquireServer.ZMoveRelative (zpos)
+	end function
+	
+	Public Function ZMoveAbsoluteNoWait (zpos)
+		ZMoveAbsoluteNoWait = AcquireServer.ZMoveAbsoluteNoWait (zpos)
+	end function
+	
+	Public Function ZMoveRelativeNoWait (zpos)
+		ZMoveRelativeNoWait = AcquireServer.ZMoveRelativeNoWait (zpos)
+	end function
+	
+	Public Function CheckEmergency()
+		CheckEmergency = AcquireServer.CheckEmergency ()
+	end function
+	
+	Public Function GetTableMaxRangeX()
+		GetTableMaxRangeX = AcquireServer.GetXY_Table_MaxRangeX()
+	end function
+	Public Function GetTableMaxRangeY()
+		GetTableMaxRangeY = AcquireServer.GetXY_Table_MaxRangeY()
+	end function
+
+	Public Function GetDeviceXPos(nDevice)
+	'nDevice = 0 --> Sensor X Pos
+	'nDevice = 1 --> Camera X Pos
+		GetDeviceXPos = AcquireServer.GetDeviceXPos(nDevice)
+	end function
+	Public Function GetDeviceYPos(nDevice)
+	'nDevice = 0 --> Sensor Y Pos
+	'nDevice = 1 --> Camera Y Pos
+
+		GetDeviceYPos = AcquireServer.GetDeviceYPos(nDevice)
+	end function
+	Public Function SetAutoSaveNo(nAutoSaveNo)
+		SetAutoSaveNo = AcquireServer.SetAutoSaveNo(nAutoSaveNo)
+	end function
+	Public Function SetAutoSavePath(strAutoSavePath)
+		SetAutoSavePath = AcquireServer.SetAutoSavePath(strAutoSavePath)
+	end function
+	Public Function SelectSensor(nSensor)
+	' nur unter Win2000
+	'nSensor = 3--> CHR Sensor Chromatisch
+	'nSensor = 13 --> CHR thickness Interferrometrisch
+	'.....
+	'.....
+		SelectSensor = AcquireServer.SelectSensor(nSensor)
+	end function
+	Public Function GetJoysticCoordinateCount()
+		GetJoysticCoordinateCount = AcquireServer.GetJoysticCoordinateCount()
+	end function
+					
+	Public Function GetJoysticCoordinateList()
+		GetJoysticCoordinateList = AcquireServer.GetJoysticCoordinateList()
+	end function
+
+	'********************************************ANALYSE************************************************************************
+	' möglische Processe sind:
+	'"3DDespike"
+	'"3DSoften"	    
+	'"Calculate_Statics"
+	'"Calculate_Plane_Correction"
+	'"Perform_Plane_Correction"
+	'"3DDespike",					
+	'"3DSoften",					
+	'"Calculate_Statics",			
+	'"Calculate_Plane_Correction",	
+	'"Perform_Plane_Correction" ,	
+	'"CalculateRadius",				
+	'"StartMarkIII",					
+	'"Print",						
+	'"getAcquireParams",				
+	'"Ach03_Project",    			
+	'"CalcRoughOrWav",				
+	'"CalculateFlatness",			
+	'"GetDataStatistics",			
+	'"Get_Joystic_List",				
+	'"SaveTmpFile",					
+	'"LoadTmpFile",					
+	'"Calc2DRoughOrWav",				
+	'"StartMarkIIIForRoughness",		
+
+	Public Function InitDataProcessing(theName)
+		InitDataProcessing=AcquireServer.InitDataProcessing(theName)
+	end Function
+	
+	Public Function SetDPParam(theName,value)
+		SetDPParam=AcquireServer.SetDPParam(theName,value)
+	end Function
+	
+	Public Function StartDataProcessing(theName,nBufferID)
+		StartDataProcessing = AcquireServer.StartDataProcessing(theName,nBufferID)
+	end Function
+	
+	Public Function GetDPResults(theName)
+		GetDPResults=AcquireServer.GetDPResult(theName)
+	end Function
+  
+	public Function GetSensorType()
+				GetSensorType = AcquireServer.GetSensorType()
+	end Function
+
+  	public Function GetSensorCalibrationTable()
+				GetSensorCalibrationTable = AcquireServer.GetSensorCalibrationTable()
+	end Function
+
+    	'***************************************************************************************************************************
+    
+	Public Function SetAllParameter
+		' copy all internal parameter to Acquire
+		dim ret
+		const ScaleFactor	= 1000 ' all Scriptvalues are given in mm while APF has m
+		const ScaleFactor2	= 1000000
+	
+		ret = true
+		SetAllParameter = false 
+		if blnScanMode_3D then
+			ret = ret AND AcquireServer.SetParam ("ScanMode","3D")
+			ret = ret AND AcquireServer.SetParam ("RangeX",dblRangeX * ScaleFactor)
+			ret = ret AND AcquireServer.SetParam ("RangeY",dblRangeY * ScaleFactor)
+			ret = ret AND AcquireServer.SetParam ("FactorRangeY",dblFactorRangeY)
+			ret = ret AND AcquireServer.SetParam ("OffsetX",dblOffsetX * ScaleFactor)
+			ret = ret AND AcquireServer.SetParam ("OffsetY",dblOffsetY * ScaleFactor)
+		else
+			ret = ret AND AcquireServer.SetParam ("ScanMode","2D")
+			ret = ret AND AcquireServer.SetParam ("StartX",dblStartX * ScaleFactor)
+			ret = ret AND AcquireServer.SetParam ("EndX",dblEndX * ScaleFactor)
+			ret = ret AND AcquireServer.SetParam ("StartY",dblStartY * ScaleFactor)
+			ret = ret AND AcquireServer.SetParam ("EndY",dblEndY * ScaleFactor)
+		end if
+		ret = ret AND AcquireServer.SetParam ("SpeedX",dblSpeedX )
+		ret = ret AND AcquireServer.SetParam ("SpeedY",dblSpeedY )
+		ret = ret AND SetBoolParameter("UseMaxSpeed",blnUseMaxSpeed)
+
+		ret = ret AND AcquireServer.SetParam ("PointsPerLine",intPointsPerLine)
+		ret = ret AND AcquireServer.SetParam ("Lines",intLines)
+		ret = ret AND AcquireServer.SetParam ("ActScanSteps",intActScanSteps)
+		ret = ret AND AcquireServer.SetParam ("ScanStepZOffset",dblScanStepZOffset * ScaleFactor2)
+		ret = ret AND AcquireServer.SetParam ("ScanStepFirstRange",dblScanStepFirstRange )
+		ret = ret AND SetBoolParameter("ScanStepUseDefault",blnScanStepUseDefault)
+		ret = ret AND AcquireServer.SetParam ("MinIntensity",intS3_MinIntensity)
+		ret = ret AND SetBoolParameter("Subtract_Reference",blnSubtract_Reference)
+		ret = ret AND AcquireServer.SetParam("ReferencePlane_Path",strReferencePlane_Path)
+
+
+		dim rate
+		Select case intS3_Measrate
+			case 0	rate = 1
+			case 1	rate = 3
+			case 2	rate = 10
+			case 3 	rate = 30
+			case 4 	rate = 100
+			case 5 	rate = 300
+			case 6 	rate = 1000
+			case 7 	rate = 2000
+			case 8 	rate = 3200
+			case 9 	rate = 4000
+			case 10 rate = 10000
+			case 11 rate = 15000
+			case else rate = 1000
+		end Select
+		
+		ret = ret AND AcquireServer.SetParam ("MeasRate",rate)
+		ret = ret AND AcquireServer.SetParam ("SensorMeasRate",rate)
+		ret = ret AND AcquireServer.SetParam ("SensorMeasIntensity",intS3_MinIntensity)
+		ret = ret AND SetBoolParameter ("AutoApproach",blnCoarseApproach)
+		ret = ret AND SetBoolParameter("AutoRetract",blnCoarseRetract)
+		ret = ret AND SetBoolParameter("DisplayStartBox",blnDisplayStartBox)
+		ret = ret AND SetBoolParameter("ApproachCenter",blnApproachCenter)
+		ret = ret AND AcquireServer.SetParam ("ApproachDistance",dblApproachDistance * ScaleFactor2)
+		ret = ret AND AcquireServer.SetParam ("ApproachRadius",dblApproachRadius * ScaleFactor2)
+		ret = ret AND SetBoolParameter("DoIntegrated",blnDoIntegrate)
+		ret = ret AND AcquireServer.SetParam ("IntegrateOver",intIntegrateOver)
+		ret = ret AND AcquireServer.SetParam ("ScanDirection",intDirection)
+		ret = ret AND SetBoolParameter("WaitAtLineEnd",blnWaitAtStartOfLine)
+	
+		ret = ret AND SetBoolParameter ("TipSimulation_DoIt",blnTipSimulation_DoIt)
+		ret = ret AND AcquireServer.SetParam ("TipSimulation_Angle",dblTipSimulation_Angle)
+		ret = ret AND AcquireServer.SetParam ("TipSimulation_Radius",dblTipSimulation_Radius)
+	
+		ret = ret AND SetBoolParameter("UseDualScanMode",blnS3_UseDualScan)
+		ret = ret AND AcquireServer.SetParam("DualScanFrequency",dblS3_ScanFrequency)
+		ret = ret AND AcquireServer.SetParam("DualScanDutyCycle",fltS3_DutyCycle)
+	
+		ret = ret AND AcquireServer.SetParam("ThicknessLowLimit",dblThicknessLowLimit)
+		ret = ret AND AcquireServer.SetParam("ThicknessHighLimit",dblThicknessHighLimit)
+		
+		ret = ret AND SetBoolParameter("ThicknessLimitsOn", bThicknessLimitsOn)
+		ret = ret AND AcquireServer.SetParam("Refractive",dblRefractive)
+
+		ret = ret AND AcquireServer.SetParam("FilterMeasurement_DoIt",bFilterMeasurement_DoIt)
+
+		ret = ret AND AcquireServer.SetParam("FilterMeasurement_FilterType",nFilterMeasurement_FilterType)
+
+		ret = ret AND AcquireServer.SetParam("FilterMeasurement_FilterParam",fFilterMeasurement_FilterParam)
+
+
+		ret = ret AND AcquireServer.SetParam ("UseSet",Empty)
+	
+
+
+
+		SetAllParameter = ret
+	end Function
+
+    	'***************************************************************************************************************************
+	
+	Function WaitForScanFinished
+		' returns not before the scan is finished (TRUE)
+		' or when Acquire has been aborted (FALSE)
+		dim Active, ab
+		WaitForScanFinished = false
+		Active = 0 : ab = false
+		IsAborted()
+		while Active < 1
+			Active = Acquire.IfScanActive
+			ab = IsAborted()
+		wend
+		WaitForScanFinished = not ab
+	end function
+	
+	Function GetCameraImageHeight()
+		GetCameraImageHeight = AcquireServer.GetCameraImageHeight()
+	end Function
+
+	Function GetCameraImageWidth()
+		GetCameraImageWidth = AcquireServer.GetCameraImageWith()
+	end Function
+
+	Function GetCursorXPos()
+		GetCursorXPos = AcquireServer.GetCursorXPos()
+	end Function
+	
+	Function GetCursorYPos()
+		GetCursorYPos = AcquireServer.GetCursorYPos()
+	end Function
+
+	Function MoveXYTableSpecialPos(enPos)
+		MoveXYTableSpecialPos = AcquireServer.MoveXYTableSpecialPos(enPos)
+	end Function
+
+	Function MoveXYTableXYAbsPos(fXPos, fYPos)
+		MoveXYTableXYAbsPos = AcquireServer.MoveXYTableXYAbsPos(fXPos, fYPos)
+	end Function
+
+	Function EnableJoystickDialog(bHow)
+		EnableJoystickDialog = AcquireServer.EnableJoysticDlg(bHow)
+	end Function
+
+	'//==============================================================================
+	'//  Function name : DLL_GetSensorProperty()
+	'/// \author       : Martin Mbassi  \date : 12/12/2008 10:15:03
+	'/// \brief        : returns the value of the specified sensor property
+	'/// 
+	'/// \return type  : long: sensor property value
+	'//==============================================================================
+	public Function GetSensorProperty(nPropertyID)
+				GetSensorProperty = AcquireServer.GetSensorProperty(nPropertyID)
+	end Function
+
+	'//==============================================================================
+	'//  Function name : SetMeasMode(int nMode)
+	'/// \author       : Abdellah Moulim  \date : 18/11/2008 15:19
+	'/// \brief        : Set the measurement mode if thickness mode is allowed
+	'/*
+	'Valid Values:
+	'			Surfaces1=0,
+	'			Surfaces2=1,
+	'			Surfaces2_CHRs2=2,	//2 Surfaces with 2 CHRs
+	'			ThicknessInt=3,
+	'			ThicknessQua=4,
+	'*/
+	'//
+	'//
+	'//
+	'/// 
+	'/// \return type  : short
+	'//==============================================================================
+	public Function SetMeasMode(nMeasMode)
+			SetMeasMode = AcquireServer.SetMeasMode(nMeasMode)
+	end Function
+
+	'//==============================================================================
+	'//  Function name : GetSerialNo()
+	'/// \author       : Christoph Szigalla  \date : 15/07/2008 16:30:26
+	'/// \brief        : returns the serial number of the frt device (like: f432, 1383 ...)
+	'///					the first 4 bits codes the device type the last 12 bits the serial number
+	'/// 
+	'/// \return type  : short
+	'//==============================================================================
+	public Function GetSerialNo()
+			GetSerialNo = AcquireServer.GetSerialNo()
+	end Function
+
+end class

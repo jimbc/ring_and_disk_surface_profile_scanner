@@ -1,0 +1,120 @@
+' Acquire error handling class
+'
+' F. Gitmans, FRT GmbH
+' Version 1.0
+Option Explicit
+
+Const DispNone			 = 0	' display nothing
+Const	DispDebug 		 = 1 	' Display debug and 
+Const	DispWarning		 = 2	' display warnings and worse
+Const	DispError			 = 3	' display errors and fatal errors
+Const	DispFatalError = 4	' display only fatal errors
+
+Const	DoNothing			= 0 ' nothing (but why did we call the function ?!?)
+Const	DoDebug				= 1 ' debug only
+Const	DoWarning			= 2	' raised msg would be a warning
+Const	DoError				= 3	' raised msg would be an error
+Const	DoFatalError	= 4	' raised msg would be a fatal error; abort script
+
+
+
+class AcquireErrorClass
+
+		Private intErr					' error number
+		Private intErrType			' which type is the error
+		Private strDescription 	' description 
+		Private	intDispErrLevel	' show errors larger than
+
+		'----------------------------------------
+		Public Property Let Err(value)
+			 intErr= value
+		end Property
+	
+		Public Property Get Err()
+			Err= intErr
+		end Property
+		'----------------------------------------
+		Public Property Let ErrType(value)
+			 intErrType= value
+		end Property
+	
+		Public Property Get ErrType()
+			ErrType= intErrType
+		end Property
+		'----------------------------------------
+		Public Property Let Description(value)
+			 strDescription= value
+		end Property
+	
+		Public Property Get Description()
+			Description= strDescription
+		end Property
+		'----------------------------------------
+		Public Property Let DispErrLevel(value)
+			 intDispErrLevel= value
+		end Property
+	
+		Public Property Get DispErrLevel()
+			DispErrLevel= intDispErrLevel
+		end Property
+		'----------------------------------------
+
+		Private Sub Class_Initialize	' Setup Initialize event.
+'			intDispErrLevel 		= DispError
+	'		strDescription	= ""
+	'		intErr 					= 0
+'			intErrType 			= 
+		End Sub
+
+		Private Sub Class_Terminate	' Setup Terminate event.
+		End Sub
+
+		Public Function OnError (cond, err, ErrorType, strvalue)
+		' if cond is true an error has occured; err denotes the err number; ErrorType defines the worth of the error
+		' strvalue has in some cases some more information, e.g. the name of the file which was not found
+			dim Buttons
+
+			if not cond then
+				exit function
+			end if
+
+			intErr 			= Err
+			intErrType 	= ErrorType
+	  
+			Select Case intErr
+        Case 100
+            strDescription = "File '" & strvalue & "' not found"
+        Case 101
+            strDescription = "APF File version not supported"
+        Case else
+            strDescription = "Other error" & VBCRLF & "Error: " & intErr
+    	End Select
+
+			Select Case intErrType
+        Case DoNothing
+            buttons = vbInformation
+        Case DoDebug
+            buttons = vbInformation
+        Case DoWarning
+            buttons = vbExclamation 
+        Case DoError
+            buttons = vbExclamation 
+        Case DoFatalError
+            buttons = vbCritical 
+        Case else
+            buttons = vbInformation
+    	End Select
+
+			if intDispErrLevel <= intErrType then
+				if (intErrType = DoFatalError) then
+					strDescription = strDescription & VBCRLF & "Script will be aborted"
+				end if
+				MsgBox strDescription, buttons + VBOKOnly, "Error occured"
+				if (intErrType = DoFatalError) then
+					Wscript.Quit
+				end if
+			end if
+		end function
+
+end class
+
